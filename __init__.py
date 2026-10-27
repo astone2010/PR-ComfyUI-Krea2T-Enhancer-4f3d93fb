@@ -171,24 +171,36 @@ def _enhanced_txtfusion_forward(
     return out, debug
 
 
-def krea2t_enhancer_wrapper(executor, x, timesteps, context, attention_mask=None, transformer_options=None, **kwargs):
-    transformer_options = transformer_options or {}
+def krea2t_enhancer_wrapper(executor, x, timesteps, context, *wargs, **kwargs):
+    # ComfyUI signature drift (commit c9602625 inserts ref_latents between
+    # attention_mask and transformer_options in SingleStreamDiT.forward):
+    #   old: execute(x, t, ctx, attention_mask, transformer_options)
+    #   new: execute(x, t, ctx, attention_mask, ref_latents, transformer_options)
+    # Accept both shapes: transformer_options is the trailing dict, and every
+    # pass-through below forwards the exact positional list it was handed.
+    transformer_options = kwargs.get("transformer_options")
+    if not isinstance(transformer_options, dict):
+        transformer_options = {}
+        for candidate in reversed(wargs):
+            if isinstance(candidate, dict):
+                transformer_options = candidate
+                break
     cfg = transformer_options.get("krea2t_prompt_adherence_enhancer", {})
     if not cfg or not cfg.get("enabled", True):
-        return executor(x, timesteps, context, attention_mask, transformer_options, **kwargs)
+        return executor(x, timesteps, context, *wargs, **kwargs)
 
     if cfg.get("_active", False):
-        return executor(x, timesteps, context, attention_mask, transformer_options, **kwargs)
+        return executor(x, timesteps, context, *wargs, **kwargs)
 
     dm = executor.class_obj
     if not _is_krea2_dm(dm):
         if cfg.get("debug", False):
             print("[Krea2TEnhancer] skipped: diffusion model does not match Krea2 text-fusion layout")
-        return executor(x, timesteps, context, attention_mask, transformer_options, **kwargs)
+        return executor(x, timesteps, context, *wargs, **kwargs)
 
     strength = _bounded_float(cfg.get("strength", 1.0), 1.0, 0.0, 1.0)
     if strength == 0.0:
-        return executor(x, timesteps, context, attention_mask, transformer_options, **kwargs)
+        return executor(x, timesteps, context, *wargs, **kwargs)
 
     txtfusion = dm.txtfusion
     original_forward = txtfusion.forward
@@ -224,7 +236,7 @@ def krea2t_enhancer_wrapper(executor, x, timesteps, context, attention_mask=None
     try:
         cfg["_active"] = True
         txtfusion.forward = enhanced_forward
-        return executor(x, timesteps, context, attention_mask, transformer_options, **kwargs)
+        return executor(x, timesteps, context, *wargs, **kwargs)
     finally:
         cfg["_active"] = False
         txtfusion.forward = original_forward
